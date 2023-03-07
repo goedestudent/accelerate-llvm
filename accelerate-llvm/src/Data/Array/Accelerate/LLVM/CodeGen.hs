@@ -73,7 +73,7 @@ llvmOfPreOpenAcc uid pacc aenv = evalCodeGen $
     FoldSeg i f z a s                       -> foldSeg uid aenv (arrayR a) i (travF2 f) (travE <$> z) (travD a) (travD s)
     Scan d f z a                            -> scan uid aenv (arrayR a) d (travF2 f) (travE <$> z) (travD a)
     Scan' d f z a                           -> scan' uid aenv (arrayR a) d (travF2 f) (travE z) (travD a)
-    Permute f (arrayR -> ArrayR shr _) p a  -> permute uid aenv (arrayR a) shr (travPF f) (travF1 p) (travD a)
+    Permute f (arrayR -> ArrayR shr _) a    -> permute uid aenv (arrayR a) shr (travPF f) (travD a)
     Stencil s tp f b a                      -> stencil1 uid aenv s tp (travF1 f) (travB (stencilEltR s) b) (travD a)
     Stencil2 s1 s2 tp f b1 a1 b2 a2         -> stencil2 uid aenv s1 s2 tp (travF2 f) (travB (stencilEltR s1) b1) (travD a1) (travB (stencilEltR s2) b2) (travD a2)
 

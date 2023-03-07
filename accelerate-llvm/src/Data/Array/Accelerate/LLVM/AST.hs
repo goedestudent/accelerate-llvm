@@ -25,7 +25,7 @@ module Data.Array.Accelerate.LLVM.AST (
 
 import Data.Array.Accelerate.LLVM.Execute.Async
 
-import Data.Array.Accelerate.AST                                    ( PreOpenAfun(..), HasArraysR(..), ArrayVar, ALeftHandSide, Exp, Direction, Message, PrimBool, arrayR )
+import Data.Array.Accelerate.AST                                    ( PreOpenAfun(..), HasArraysR(..), ArrayVar, ALeftHandSide, Exp, Direction, Message, PrimBool, arrayR, PrimMaybe )
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Representation.Array
@@ -150,7 +150,7 @@ data PreOpenAccSkeleton acc arch aenv a where
               -> PreOpenAccSkeleton acc arch aenv (Array (sh, Int) e, Array sh e)
 
   Permute     :: acc                    arch aenv (Array sh' e)     -- target array (default values)
-              -> DelayedOpenAcc     acc arch aenv (Array sh  e)     -- source values
+              -> DelayedOpenAcc     acc arch aenv (Array sh  (PrimMaybe sh', e))     -- source values
               -> PreOpenAccSkeleton acc arch aenv (Array sh' e)
 
   Stencil1    :: TypeR b

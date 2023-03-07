@@ -105,11 +105,10 @@ class Skeleton arch where
 
   permute       :: UID
                 -> Gamma             aenv
-                -> ArrayR                 (Array sh e)
+                -> ArrayR                 (Array sh (PrimMaybe sh', e))
                 -> ShapeR                 sh'
                 -> IRPermuteFun arch aenv (e -> e -> e)
-                -> IRFun1       arch aenv (sh -> PrimMaybe sh')
-                -> MIRDelayed   arch aenv (Array sh e)
+                -> MIRDelayed   arch aenv (Array sh (PrimMaybe sh', e))
                 -> CodeGen      arch      (IROpenAcc arch aenv (Array sh' e))
 
   backpermute   :: UID

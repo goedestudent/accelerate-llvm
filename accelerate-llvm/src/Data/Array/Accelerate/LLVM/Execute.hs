@@ -26,7 +26,7 @@ module Data.Array.Accelerate.LLVM.Execute (
 
 ) where
 
-import Data.Array.Accelerate.AST                                ( Direction, PreOpenAfun(..), ALeftHandSide, ArrayVar, Fun, OpenFun(..), Exp, OpenExp(..), PrimBool, arraysR, arrayR )
+import Data.Array.Accelerate.AST                                ( Direction, PreOpenAfun(..), ALeftHandSide, ArrayVar, Fun, OpenFun(..), Exp, OpenExp(..), PrimBool, arraysR, arrayR, PrimMaybe )
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Analysis.Match
@@ -127,13 +127,13 @@ class Remote arch => Execute arch where
                 -> Par arch (FutureR arch (Array (sh, Int) e, Array sh e))
 
   permute       :: Bool                         -- ^ update defaults array in-place?
-                -> ArrayR (Array sh e)
+                -> ArrayR (Array sh (PrimMaybe sh', e))
                 -> ShapeR sh'
                 -> ExecutableR arch
                 -> Gamma aenv
                 -> ValR arch aenv
                 -> Array sh' e
-                -> Delayed (Array sh e)
+                -> Delayed (Array sh (PrimMaybe sh', e))
                 -> Par arch (FutureR arch (Array sh' e))
 
   stencil1      :: TypeR a
@@ -433,13 +433,13 @@ executeOpenAcc !topAcc !aenv = travA topAcc
       = map (if inplace a then matchTypeR tp tp' else Nothing) repr tp'
 
     permute_ :: ExecOpenAcc arch aenv (Array sh' e)
-             -> ArrayR (Array sh e)
+             -> ArrayR (Array sh (PrimMaybe sh', e))
              -> ShapeR sh'
              -> ExecutableR arch
              -> Gamma aenv
              -> ValR arch aenv
              -> Array sh' e
-             -> Delayed (Array sh e)
+             -> Delayed (Array sh (PrimMaybe sh', e))
              -> Par arch (FutureR arch (Array sh' e))
     permute_ d = permute (inplace d)
 

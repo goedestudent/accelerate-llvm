@@ -82,16 +82,15 @@ mkPermute
     :: HasCallStack
     => UID
     -> Gamma            aenv
-    -> ArrayR (Array sh e)
+    -> ArrayR (Array sh (PrimMaybe sh', e))
     -> ShapeR sh'
     -> IRPermuteFun PTX aenv (e -> e -> e)
-    -> IRFun1       PTX aenv (sh -> PrimMaybe sh')
-    -> MIRDelayed   PTX aenv (Array sh e)
+    -> MIRDelayed   PTX aenv (Array sh (PrimMaybe sh', e))
     -> CodeGen      PTX      (IROpenAcc PTX aenv (Array sh' e))
-mkPermute uid aenv repr shr' IRPermuteFun{..} project arr =
+mkPermute uid aenv repr shr' IRPermuteFun{..} arr =
   case atomicRMW of
-    Just (rmw, f) -> mkPermute_rmw   uid aenv repr shr' rmw f   project arr
-    _             -> mkPermute_mutex uid aenv repr shr' combine project arr
+    Just (rmw, f) -> mkPermute_rmw   uid aenv repr shr' rmw f   arr
+    _             -> mkPermute_mutex uid aenv repr shr' combine arr
 
 
 -- Parallel forward permutation function which uses atomic instructions to
@@ -119,14 +118,13 @@ mkPermute_rmw
     :: HasCallStack
     => UID
     -> Gamma aenv
-    -> ArrayR (Array sh e)
+    -> ArrayR (Array sh (PrimMaybe sh', e))
     -> ShapeR sh'
     -> RMWOperation
     -> IRFun1     PTX aenv (e -> e)
-    -> IRFun1     PTX aenv (sh -> PrimMaybe sh')
-    -> MIRDelayed PTX aenv (Array sh e)
+    -> MIRDelayed PTX aenv (Array sh (PrimMaybe sh', e))
     -> CodeGen    PTX      (IROpenAcc PTX aenv (Array sh' e))
-mkPermute_rmw uid aenv (ArrayR shr tp) shr' rmw update project marr = do
+mkPermute_rmw uid aenv (ArrayR shr (TupRpair _ tp)) shr' rmw update marr = do
   dev <- liftCodeGen $ gets ptxDeviceProperties
   --
   let
@@ -150,11 +148,12 @@ mkPermute_rmw uid aenv (ArrayR shr tp) shr' rmw update project marr = do
     imapFromTo start end $ \i -> do
 
       ix  <- indexOfInt shr shIn i
-      ix' <- app1 project ix
+      tup <- app1 (delayedLinearIndex arrIn) i
+      let ix' = A.fst tup
 
       when (isJust ix') $ do
+        let x = A.snd tup
         j <- intOfIndex shr' (irArrayShape arrOut) =<< fromJust ix'
-        x <- app1 (delayedLinearIndex arrIn) i
         r <- app1 update x
 
         case rmw of
@@ -220,13 +219,12 @@ mkPermute_rmw uid aenv (ArrayR shr tp) shr' rmw update project marr = do
 mkPermute_mutex
     :: UID
     -> Gamma          aenv
-    -> ArrayR (Array sh e)
+    -> ArrayR (Array sh (PrimMaybe sh', e))
     -> ShapeR sh'
     -> IRFun2     PTX aenv (e -> e -> e)
-    -> IRFun1     PTX aenv (sh -> PrimMaybe sh')
-    -> MIRDelayed PTX aenv (Array sh e)
+    -> MIRDelayed PTX aenv (Array sh (PrimMaybe sh', e))
     -> CodeGen    PTX      (IROpenAcc PTX aenv (Array sh' e))
-mkPermute_mutex uid aenv (ArrayR shr tp) shr' combine project marr =
+mkPermute_mutex uid aenv (ArrayR shr (TupRpair _ tp)) shr' combine marr =
   let
       outR                  = ArrayR shr' tp
       lockR                 = ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeWord32)
@@ -244,12 +242,13 @@ mkPermute_mutex uid aenv (ArrayR shr tp) shr' combine project marr =
     imapFromTo start end $ \i -> do
 
       ix  <- indexOfInt shr shIn i
-      ix' <- app1 project ix
+      tup <- app1 (delayedLinearIndex arrIn) i
+      let ix' = A.fst tup
 
       -- project element onto the destination array and (atomically) update
       when (isJust ix') $ do
+        let x   = A.snd tup
         j <- intOfIndex shr' (irArrayShape arrOut) =<< fromJust ix'
-        x <- app1 (delayedLinearIndex arrIn) i
 
         atomically arrLock j $ do
           y <- readArray TypeInt arrOut j

@@ -26,6 +26,7 @@ module Data.Array.Accelerate.LLVM.PTX.Execute (
 
 ) where
 
+import Data.Array.Accelerate.AST                                    ( PrimMaybe )
 import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Lifetime
@@ -594,15 +595,15 @@ scan'DimOp repr@(ArrayR (ShapeRsnoc shr') _) exe gamma aenv input@(delayedShape 
 permuteOp
     :: HasCallStack
     => Bool
-    -> ArrayR (Array sh e)
+    -> ArrayR (Array sh (PrimMaybe sh', e))
     -> ShapeR sh'
     -> ExecutableR PTX
     -> Gamma aenv
     -> Val aenv
     -> Array sh' e
-    -> Delayed (Array sh e)
+    -> Delayed (Array sh (PrimMaybe sh', e))
     -> Par PTX (Future (Array sh' e))
-permuteOp inplace repr@(ArrayR shr tp) shr' exe gamma aenv defaults@(shape -> shOut) input@(delayedShape -> shIn) =
+permuteOp inplace repr@(ArrayR shr (TupRpair _ tp)) shr' exe gamma aenv defaults@(shape -> shOut) input@(delayedShape -> shIn) =
   withExecutable exe $ \ptxExecutable -> do
     let
         n        = size shr  shIn
