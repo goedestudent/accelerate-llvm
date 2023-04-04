@@ -20,6 +20,7 @@ module Data.Array.Accelerate.LLVM.CodeGen.Skeleton (
 ) where
 
 import Data.Array.Accelerate.AST
+import Data.Array.Accelerate.AST.ExpandFusionStrategy         ( ExpandFusionStrategy(..) )
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Stencil
@@ -117,6 +118,18 @@ class Skeleton arch where
                 -> ShapeR              sh'
                 -> IRFun1    arch aenv (sh' -> sh)
                 -> CodeGen   arch      (IROpenAcc arch aenv (Array sh' e))
+
+  permutedExpand ::
+                 UID
+              -> Gamma          aenv
+              -> ArrayR              (Vector e)
+              -> TypeR     e'
+              -> ExpandFusionStrategy
+              -> IRFun1    arch aenv (e -> Int)
+              -> IRFun2    arch aenv (e -> Int -> (PrimMaybe sh', e'))
+              -> IRPermuteFun arch aenv (e' -> e' -> e')
+              -> ShapeR    sh'
+              -> CodeGen   arch      (IROpenAcc arch aenv (Array sh' e'))
 
   stencil1      :: UID
                 -> Gamma aenv

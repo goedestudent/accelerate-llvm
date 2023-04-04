@@ -67,6 +67,7 @@ llvmOfPreOpenAcc uid pacc aenv = evalCodeGen $
     Generate repr _ f                       -> generate uid aenv repr (travF1 f)
     Transform repr2 _ p f (arrayR -> repr1) -> transform uid aenv repr1 repr2 (travF1 p) (travF1 f)
     Backpermute shr _ p (arrayR -> repr)    -> backpermute uid aenv repr shr (travF1 p)
+    PermutedExpand tp s sz get (arrayR -> repr) comb (arrayR -> ArrayR shr _)      -> permutedExpand uid aenv repr tp s (travF1 sz) (travF2 get) (travPF comb) shr
 
     -- Consumers
     Fold f z a                              -> fold uid aenv (reduceRank $ arrayR a) (travF2 f) (travE <$> z) (travD a)

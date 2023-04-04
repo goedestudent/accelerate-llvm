@@ -26,6 +26,7 @@ module Data.Array.Accelerate.LLVM.AST (
 import Data.Array.Accelerate.LLVM.Execute.Async
 
 import Data.Array.Accelerate.AST                                    ( PreOpenAfun(..), HasArraysR(..), ArrayVar, ALeftHandSide, Exp, Direction, Message, PrimBool, arrayR, PrimMaybe )
+import Data.Array.Accelerate.AST.ExpandFusionStrategy               ( ExpandFusionStrategy(..) )
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Representation.Array
@@ -163,6 +164,16 @@ data PreOpenAccSkeleton acc arch aenv a where
               -> DelayedOpenAcc     acc arch aenv (Array sh a)
               -> DelayedOpenAcc     acc arch aenv (Array sh b)
               -> PreOpenAccSkeleton acc arch aenv (Array sh c)
+
+  PermutedExpand :: 
+              -- Data for the expand
+              TypeR e'
+              -> ExpandFusionStrategy
+              -> acc                    arch aenv (Vector e)     -- source array
+
+              -- Data for the permute
+              -> acc                    arch aenv (Array sh' e')  -- target array (default values)
+              -> PreOpenAccSkeleton acc arch aenv (Array sh' e')
 
 data UnzipIdx a b where
   UnzipId   ::                                   UnzipIdx a a

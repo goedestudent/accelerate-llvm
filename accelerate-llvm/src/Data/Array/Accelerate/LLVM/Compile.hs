@@ -173,6 +173,8 @@ compileOpenAcc = traverseAcc
         Generate r sh f             -> build =<< liftA2 (generate r)  <$> travE sh <*> travF f
         Transform r sh p f a        -> build =<< liftA4 (transform r) <$> travE sh <*> travF p <*> travF f <*> travA a
         Backpermute shr sh f a      -> build =<< liftA3 (backpermute shr) <$> travE sh <*> travF f <*> travA a
+        PermutedExpand tp s sz get a comb dfts
+                                    -> build =<< liftA5 (permutedExpand tp s) <$> travF sz <*> travF get <*> travA a <*> travF comb <*> travA dfts
 
         -- Consumers
         Fold f z a                  -> build =<< liftA3 fold          <$> travF f <*> travME z <*> travD a
@@ -190,6 +192,8 @@ compileOpenAcc = traverseAcc
 
       where
         map tp _ a             = AST.Map tp a
+        permutedExpand tp s _ _ a _ d      
+                               = AST.PermutedExpand tp s a d
         generate r sh _        = AST.Generate r sh
         transform r sh _ _ a   = AST.Transform r sh a
         backpermute shr sh _ a = AST.Backpermute shr sh a

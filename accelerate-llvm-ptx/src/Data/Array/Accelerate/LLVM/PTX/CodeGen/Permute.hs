@@ -17,7 +17,7 @@
 
 module Data.Array.Accelerate.LLVM.PTX.CodeGen.Permute (
 
-  mkPermute,
+  mkPermute, atomically
 
 ) where
 

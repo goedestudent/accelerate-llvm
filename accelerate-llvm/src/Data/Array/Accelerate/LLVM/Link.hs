@@ -140,6 +140,7 @@ linkOpenAcc = travA
         Permute d a             -> Permute         <$> travA d <*> travD a
         Stencil1 tp h a         -> Stencil1 tp h   <$> travD a
         Stencil2 tp h a b       -> Stencil2 tp h   <$> travD a <*> travD b
+        PermutedExpand tp s a d -> PermutedExpand tp s <$> travA a <*> travA d
 
     travAF :: CompiledOpenAfun arch aenv f
            -> LLVM arch (ExecOpenAfun arch aenv f)

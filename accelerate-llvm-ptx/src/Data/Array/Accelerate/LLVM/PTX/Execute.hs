@@ -96,6 +96,7 @@ instance Execute PTX where
   {-# INLINE stencil1    #-}
   {-# INLINE stencil2    #-}
   {-# INLINE aforeign    #-}
+  {-# INLINE permutedExpand #-}
   map           = mapOp
   generate      = generateOp
   transform     = transformOp
@@ -110,6 +111,7 @@ instance Execute PTX where
   stencil1      = stencil1Op
   stencil2      = stencil2Op
   aforeign      = aforeignOp
+  permutedExpand = permutedExpandOp
 
 
 -- Skeleton implementation
@@ -645,6 +647,69 @@ permuteOp inplace repr@(ArrayR shr (TupRpair _ tp)) shr' exe gamma aenv defaults
     put future result
     return future
 
+{-# INLINE permutedExpandOp #-}
+permutedExpandOp
+    :: HasCallStack
+    => Bool
+    -> ArrayR              (Vector e) --input
+    -> ShapeR    sh'
+    -> TypeR     e'
+    -> ExecutableR PTX -- ?
+    -> Gamma aenv -- env
+    -> Val aenv -- ?
+    -> Vector e -- in
+    -> Array sh' e' -- defaults
+    -> Par PTX (Future (Array sh' e'))
+permutedExpandOp inplace repr@(ArrayR shr tp) shr' tp' exe gamma aenv input@(shape -> shIn) defaults@(shape -> shOut) =
+  withExecutable exe $ \ptxExecutable -> do
+    let
+        n        = size shr  shIn
+        m        = size shr' shOut
+        repr'    = ArrayR shr' tp'
+        reprLock = ArrayR dim1 $ TupRsingle $ scalarTypeWord32
+        paramR   = TupRsingle $ ParamRarray repr
+        paramR'  = TupRsingle $ ParamRarray repr'
+        kernel   = case functionTable ptxExecutable of
+                      k:_ -> k
+                      _   -> internalError "no kernels found"
+    --
+    future  <- new
+    result  <- if inplace
+                 then Debug.trace Debug.dump_exec "exec: permutedExpand/inplace" $ return defaults
+                 else Debug.trace Debug.dump_exec "exec: permutedExpand/clone"   $ get =<< cloneArrayAsync repr' defaults
+    --
+    --
+    let reprMaxSzArr  = ArrayR dim1 $ TupRsingle $ scalarTypeInt32
+    let paramMaxSzArr = TupRsingle $ ParamRfuture $ ParamRarray reprMaxSzArr
+    maxSzArr     <- new :: Par PTX (Future (Vector Int32))
+    Array _ ad' <- allocateRemote reprMaxSzArr ((), n)
+    fork $ do fill <- memsetArrayAsync (NumSingleType $ IntegralNumType TypeInt32) n 0 ad'
+              put maxSzArr . Array ((), n) =<< get fill
+    --
+    --
+    let kernelName' =
+          let kn = kernelName kernel
+          in S.take (S.length kn - 65) kn
+    case kernelName' of
+      -- execute directly using atomic operations
+      "permutedexpand_rmw"   ->
+        let paramsR = paramR' `TupRpair` paramMaxSzArr `TupRpair` paramR
+        in  executeOp kernel gamma aenv dim1 ((), n) paramsR ((result, maxSzArr), input)
+
+      -- a temporary array is required for spin-locks around the critical section
+      "permutedexpand_mutex" -> do
+        barrier     <- new :: Par PTX (Future (Vector Word32))
+        Array _ ad  <- allocateRemote reprLock ((), m)
+        fork $ do fill <- memsetArrayAsync (NumSingleType $ IntegralNumType TypeWord32) m 0 ad
+                  put barrier . Array ((), m) =<< get fill
+        --
+        let paramsR = paramR' `TupRpair` TupRsingle (ParamRfuture $ ParamRarray reprLock) `TupRpair` paramMaxSzArr `TupRpair` paramR
+        executeOp kernel gamma aenv dim1 ((), n) paramsR (((result, barrier), maxSzArr), input)
+
+      _               -> internalError "unexpected kernel image"
+    --
+    put future result
+    return future
 
 {-# INLINE stencil1Op #-}
 stencil1Op

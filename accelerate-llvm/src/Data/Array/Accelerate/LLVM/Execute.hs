@@ -91,6 +91,18 @@ class Remote arch => Execute arch where
                 -> Array sh e
                 -> Par arch (FutureR arch (Array sh' e))
 
+  permutedExpand :: 
+                   Bool
+                -> ArrayR              (Vector e) --input
+                -> ShapeR    sh'
+                -> TypeR     e'
+                -> ExecutableR arch -- ?
+                -> Gamma aenv -- env
+                -> ValR arch   aenv -- ?
+                -> Vector e -- in
+                -> Array sh' e' -- defaults
+                -> Par arch (FutureR arch (Array sh' e'))
+
   fold          :: HasInitialValue
                 -> ArrayR (Array sh e)
                 -> ExecutableR arch
@@ -312,6 +324,8 @@ executeOpenAcc !topAcc !aenv = travA topAcc
         Generate repr sh       -> exec1 (generate repr) (travE sh)
         Transform repr sh a    -> exec2 (transform (arrayR a) repr) (travE sh) (travA a)
         Backpermute shr sh a   -> exec2 (backpermute (arrayR a) shr) (travE sh) (travA a)
+
+        PermutedExpand tp _ a d-> exec2 (permutedExpand (inplace d) (arrayR a) (arrayRshape $ arrayR d) tp) (travA a) (travA d)
 
         -- Consumers
         Fold z a               -> exec1 (fold z     $ reduceRank $ arrayR a) (travD a)

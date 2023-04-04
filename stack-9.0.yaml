@@ -6,12 +6,15 @@ resolver: nightly-2022-02-16
 
 packages:
 - accelerate-llvm
-- accelerate-llvm-native
+# - accelerate-llvm-native
 - accelerate-llvm-ptx
 
 extra-deps:
-- github: tmcdonell/accelerate
-  commit: a9cf26f40cea53042659cca7d509ae2acafd3857
+- github: goedestudent/accelerate
+  commit: 57ad440ad97ebd7b9acc2dcba833256d983a40cf
+# - github: tmcdonell/accelerate
+#   commit: a9cf26f40cea53042659cca7d509ae2acafd3857
+# - '../accelerate'
 
 - github: llvm-hs/llvm-hs
   commit: eda85a2bbe362a0b89df5adce0cb65e4e755eac5
