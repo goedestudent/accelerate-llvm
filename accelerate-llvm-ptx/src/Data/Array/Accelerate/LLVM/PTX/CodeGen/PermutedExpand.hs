@@ -31,7 +31,7 @@ import Data.Array.Accelerate.Representation.Elt
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 
-import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic                as A
+import Data.Array.Accelerate.LLVM.CodeGen.Arithmetic                as A hiding((-), negate)
 import Data.Array.Accelerate.LLVM.CodeGen.Array
 import Data.Array.Accelerate.LLVM.CodeGen.Base
 import Data.Array.Accelerate.LLVM.CodeGen.Constant
@@ -63,7 +63,8 @@ import Foreign.CUDA.Analysis
 import Control.Monad                                                ( void )
 import Control.Monad.State                                          ( gets )
 import Prelude
-import Data.String (fromString)
+import Data.String                                                  (fromString)
+import Data.Bits                                                    as Bits (shiftL)
 
 ----
 -- Selection of loop/fusion strategy
@@ -88,7 +89,9 @@ permutedExpandOuter Blocks = mkPermutedExpandOuterBlocks -- Highly inefficient. 
 permutedExpandOuter Shuffle = mkPermutedExpandOuterShuffle -- Every warp handles 1 element of the input, every lane expands 1 element-index combination and permutes it. A value is read only once per warp
 permutedExpandOuter BlockShuffle = mkPermutedExpandOuterBlockShuffle -- Every thread block handles 1 element of the input. This element is read only once per warp. Every thread/lane expands 1 element-index combination and permutes it.
 permutedExpandOuter SharedMem = mkPermutedExpandOuterSharedMem -- Every thread block handles 1 element of the input. The element is read only once per block and stored in shared memory. every thread expands 1 element-index combination and permutes it
-permutedExpandOuter (MultiBlock i) = mkPermutedExpandOuterMultiBlock i
+permutedExpandOuter (MultiBlock i) = mkPermutedExpandOuterMultiBlock i True
+permutedExpandOuter (MultiBlock' i) = mkPermutedExpandOuterMultiBlock i False
+
 
 ----
 -- Generation of base kernel
@@ -444,13 +447,18 @@ mkPermutedExpandOuterSharedMem arrIn _ sz get tp shr body =
 
               body ix' x
 
-mkPermutedExpandOuterMultiBlock :: Int -> PermutedExpandOuterLoop
-mkPermutedExpandOuterMultiBlock multiBlockSizeI arrIn _ sz get tp shr body = 
+mkPermutedExpandOuterMultiBlock :: Int -> Bool -> PermutedExpandOuterLoop
+mkPermutedExpandOuterMultiBlock multiBlockSizeI unrollBinarySearch arrIn _ sz get tp shr body = 
   let start = liftInt 0
       tpInt = TupRsingle $ SingleScalarType $ NumSingleType $ IntegralNumType $ TypeInt
+      tpInt32 = TupRsingle $ SingleScalarType $ NumSingleType $ IntegralNumType $ TypeInt32
       multiBlockSizeW64 = Prelude.fromIntegral multiBlockSizeI :: Word64
+      multiBlockSizeI32 = liftInt32 $ Prelude.fromIntegral (multiBlockSizeI + 1)
       multiBlockSize    = liftInt multiBlockSizeI
       multiBlockSize'   = liftInt (multiBlockSizeI - 1)
+      binSearch
+        | unrollBinarySearch = binSearchUnrolled multiBlockSizeI
+        | otherwise          = binSearchRolled multiBlockSize
   in
     do
       -- Shared memory is allocated per thread block, so all threads in the block have access to the same shared memory: https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/
@@ -468,7 +476,7 @@ mkPermutedExpandOuterMultiBlock multiBlockSizeI arrIn _ sz get tp shr body =
         imapFromToBlockThread start (multiBlockSize) $ \inputThreadOffset -> do
           inputIdx  <- add numType inputBaseIdx inputThreadOffset -- index of the element we are currently looking at
 
-          writeArray TypeInt smemSz inputThreadOffset (liftInt 0)
+          -- writeArray TypeInt smemSz inputThreadOffset (liftInt 0)
           -- Make sure we do not read in elements that do not exist
           when (A.lt singleType inputIdx end) $ do 
             v    <- readArray TypeInt arrIn inputIdx
@@ -476,9 +484,9 @@ mkPermutedExpandOuterMultiBlock multiBlockSizeI arrIn _ sz get tp shr body =
             writeArray TypeInt smem   inputThreadOffset v
             writeArray TypeInt smemSz inputThreadOffset size
 
-          -- -- If we are outside of bounds, just set size to 0. This also removes the need to check this in later computations
-          -- when (A.gte singleType inputIdx end) $ do
-          --   writeArray TypeInt smemSz inputThreadOffset (liftInt 0)
+          -- If we are outside of bounds, just set size to 0. This also removes the need to check this in later computations
+          when (A.gte singleType inputIdx end) $ do
+            writeArray TypeInt smemSz inputThreadOffset (liftInt 0)
 
         __syncthreads
 
@@ -499,7 +507,7 @@ mkPermutedExpandOuterMultiBlock multiBlockSizeI arrIn _ sz get tp shr body =
         -- We perform 1 big loop: every thread gets an id from 0 to end' (globalGetIdx), and uses that to find both the relevant input element, and the index that should be used by 'get'
         imapFromToBlockThread start end' $ \globalGetIdx -> do
           i'       <- A.add numType globalGetIdx (liftInt 1) -- add 1, otherwise binary search is off-by-one
-          smemIdx  <- binSearch i' smemSz (multiBlockSize)   -- get index of relevant input element
+          smemIdx  <- binSearch i' smemSz                    -- get index of relevant input element
           pIdx     <- A.sub numType smemIdx (liftInt 1)      -- index of previous element
           pref     <- ifThenElse (tpInt, A.eq singleType smemIdx (liftInt 0)) (return $ liftInt 0) (readArray TypeInt smemSz pIdx) -- prefix sum of relevant element
           v        <- readArray TypeInt smem smemIdx -- read in relevant element
@@ -572,12 +580,20 @@ imapFromToBlockThread start end body = do
   --
   imapFromStepTo i0 step end body
 
+  -- For thread in block
+imapFromStepToBlockThread :: Operands Int -> Operands Int -> Operands Int -> (Operands Int -> CodeGen PTX ()) -> CodeGen PTX ()
+imapFromStepToBlockThread start step end body = do
+  tid   <- A.fromIntegral integralType numType =<< threadIdx
+  i0    <- add numType tid start
+  --
+  imapFromStepTo i0 step end body
+
 -- | Binary search, that looks for the index of a given value in the given array
-binSearch :: Operands Int               -- ^ Target value to look for
-          -> IRArray (Array DIM1 Int)   -- ^ Array to look for value for
-          -> Operands Int               -- ^ Length of array
-          -> CodeGen PTX (Operands Int) -- ^ Return value: index of the first element that is greater than or equal to the target value
-binSearch i arr end = do
+binSearchRolled :: Operands Int               -- ^ Length of array
+                -> Operands Int               -- ^ Target value to look for
+                -> IRArray (Array DIM1 Int)   -- ^ Array to look for value for
+                -> CodeGen PTX (Operands Int) -- ^ Return value: index of the first element that is greater than or equal to the target value
+binSearchRolled end i arr = do
     right     <- A.sub numType end (liftInt 1)
     leftRight <- while intPairType (\(OP_Pair left right) -> gt singleType right left) body (pair (liftInt 0) right)
     return $ A.fst leftRight
@@ -589,3 +605,41 @@ binSearch i arr end = do
                                       mid1    <- add numType mid (liftInt 1)
                                       value   <- readArray TypeInt arr mid
                                       ifThenElse (intPairType, lt singleType value i) (return $ pair mid1 right) (return $ pair left mid)
+
+-- | Binary search, that looks for the index of a given value in the given array
+binSearchUnrolled :: Int                        -- ^ Length of array
+                  -> Operands Int               -- ^ Target value to search for
+                  -> IRArray (Array DIM1 Int)   -- ^ Array in which to search for value
+                  -> CodeGen PTX (Operands Int) -- ^ Return value: index of the first element that is greater than or equal to the target value
+binSearchUnrolled arrayLength i arr = 
+  let
+    numAccBits = (Prelude.ceiling (Prelude.logBase 2 (Prelude.fromIntegral (arrayLength)))) - 1
+    initialAcc = liftInt 0
+    typeInt     = TupRsingle $ SingleScalarType (NumSingleType (IntegralNumType TypeInt))
+  in
+    do 
+      target      <- A.sub numType i (liftInt 1)
+      res         <- binSearch_loop numAccBits arr target initialAcc
+      fstElem     <- readArray TypeInt arr (liftInt 0)
+      resZero     <- A.eq singleType res (liftInt 0)
+      fstLtTarget <- gt singleType fstElem target
+      res'        <- ifThenElse (typeInt, land resZero fstLtTarget) (A.sub numType res (liftInt 1)) (return res)
+      A.add numType res' (liftInt 1)
+
+-- | Unrolled binary search, that looks for the index of a given value in the given array
+binSearch_loop :: Int                        -- ^ Iteration of the unrolled loop
+               -> IRArray (Array DIM1 Int)   -- ^ Array to look for value for
+               -> Operands Int               -- ^ Target value to look for
+               -> Operands Int               -- ^ Length of array
+               -> CodeGen PTX (Operands Int) -- ^ Return value: index of the last element that is less than or equal to the target value
+binSearch_loop (-1) arr target acc = return acc
+binSearch_loop currentBit arr target acc = 
+  let 
+    mask        = liftInt $ 1 `Bits.shiftL` currentBit
+    typeInt     = TupRsingle $ SingleScalarType (NumSingleType (IntegralNumType TypeInt))
+  in do
+    mid   <- A.add numType acc mask
+    value <- readArray TypeInt arr mid
+    acc'  <- ifThenElse (typeInt, lte singleType value target) (bor TypeInt acc mask) (return acc)
+    binSearch_loop (currentBit - 1) arr target acc'
+

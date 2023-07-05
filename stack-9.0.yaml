@@ -11,7 +11,7 @@ packages:
 
 extra-deps:
 - github: goedestudent/accelerate
-  commit: 57ad440ad97ebd7b9acc2dcba833256d983a40cf
+  commit: b56a2f2cd86f92e86bea1d492c346f3eab7a07f6
 # - github: tmcdonell/accelerate
 #   commit: a9cf26f40cea53042659cca7d509ae2acafd3857
 # - '../accelerate'
