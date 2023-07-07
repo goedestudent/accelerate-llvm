@@ -38,7 +38,7 @@ import Data.Array.Accelerate.LLVM.CodeGen.Constant
 import Data.Array.Accelerate.LLVM.CodeGen.Environment
 import Data.Array.Accelerate.LLVM.CodeGen.Exp
 import Data.Array.Accelerate.LLVM.CodeGen.IR
-import Data.Array.Accelerate.LLVM.CodeGen.Loop                      (imapFromStepTo, iterFromStepTo, for, while)
+import Data.Array.Accelerate.LLVM.CodeGen.Loop                      (imapFromStepTo, iterFromStepTo, while)
 import Data.Array.Accelerate.LLVM.CodeGen.Monad
 import Data.Array.Accelerate.LLVM.CodeGen.Permute
 import Data.Array.Accelerate.LLVM.CodeGen.Ptr
@@ -89,8 +89,9 @@ permutedExpandOuter Blocks = mkPermutedExpandOuterBlocks -- Highly inefficient. 
 permutedExpandOuter Shuffle = mkPermutedExpandOuterShuffle -- Every warp handles 1 element of the input, every lane expands 1 element-index combination and permutes it. A value is read only once per warp
 permutedExpandOuter BlockShuffle = mkPermutedExpandOuterBlockShuffle -- Every thread block handles 1 element of the input. This element is read only once per warp. Every thread/lane expands 1 element-index combination and permutes it.
 permutedExpandOuter SharedMem = mkPermutedExpandOuterSharedMem -- Every thread block handles 1 element of the input. The element is read only once per block and stored in shared memory. every thread expands 1 element-index combination and permutes it
-permutedExpandOuter (MultiBlock i) = mkPermutedExpandOuterMultiBlock i True
-permutedExpandOuter (MultiBlock' i) = mkPermutedExpandOuterMultiBlock i False
+permutedExpandOuter (MultiBlock i) = mkPermutedExpandOuterMultiBlock i True True
+permutedExpandOuter (MultiBlock' i) = mkPermutedExpandOuterMultiBlock i False False
+permutedExpandOuter (MultiBlock'' i) = mkPermutedExpandOuterMultiBlock i True False
 
 
 ----
@@ -447,18 +448,18 @@ mkPermutedExpandOuterSharedMem arrIn _ sz get tp shr body =
 
               body ix' x
 
-mkPermutedExpandOuterMultiBlock :: Int -> Bool -> PermutedExpandOuterLoop
-mkPermutedExpandOuterMultiBlock multiBlockSizeI unrollBinarySearch arrIn _ sz get tp shr body = 
+mkPermutedExpandOuterMultiBlock :: Int -> Bool -> Bool -> PermutedExpandOuterLoop
+mkPermutedExpandOuterMultiBlock multiBlockSizeI unrollBinarySearch efficientScan arrIn _ sz get tp shr body = 
   let start = liftInt 0
-      tpInt = TupRsingle $ SingleScalarType $ NumSingleType $ IntegralNumType $ TypeInt
-      tpInt32 = TupRsingle $ SingleScalarType $ NumSingleType $ IntegralNumType $ TypeInt32
       multiBlockSizeW64 = Prelude.fromIntegral multiBlockSizeI :: Word64
-      multiBlockSizeI32 = liftInt32 $ Prelude.fromIntegral (multiBlockSizeI + 1)
       multiBlockSize    = liftInt multiBlockSizeI
       multiBlockSize'   = liftInt (multiBlockSizeI - 1)
       binSearch
         | unrollBinarySearch = binSearchUnrolled multiBlockSizeI
         | otherwise          = binSearchRolled multiBlockSize
+      prefixSum
+        | efficientScan = prefixSumEfficient
+        | otherwise     = prefixSumSequential
   in
     do
       -- Shared memory is allocated per thread block, so all threads in the block have access to the same shared memory: https://developer.nvidia.com/blog/using-shared-memory-cuda-cc/
@@ -490,14 +491,7 @@ mkPermutedExpandOuterMultiBlock multiBlockSizeI unrollBinarySearch arrIn _ sz ge
 
         __syncthreads
 
-        -- Calculate prefix sum
-        when (A.eq singleType tid (liftInt32 0)) $ do
-          _ <- iterFromStepTo tpInt start (liftInt 1) (multiBlockSize) start $ \smemIdx pref -> do
-            v  <- readArray TypeInt smemSz smemIdx
-            v' <- add numType v pref
-            writeArray TypeInt smemSz smemIdx v'
-            return v'
-          return_
+        prefixSum multiBlockSize tid smemSz
 
         __syncthreads
 
@@ -520,9 +514,21 @@ mkPermutedExpandOuterMultiBlock multiBlockSizeI unrollBinarySearch arrIn _ sz ge
             let x = A.snd tup -- Element that we want to permute
 
             body idx'' x
-  where binSearch' target arr end = iterFromStepTo (TupRsingle $ SingleScalarType $ NumSingleType $ IntegralNumType $ TypeInt) (liftInt 0) (liftInt 1) end (liftInt 0)$ \i prevI -> do 
-                                                                                                  i' <- A.add numType i (liftInt 1)
-                                                                                                  ifThenElse (TupRsingle $ SingleScalarType $ NumSingleType $ IntegralNumType $ TypeInt, A.gt singleType target =<< readArray TypeInt arr i) (return i') (return prevI)
+  where tpInt = TupRsingle $ SingleScalarType $ NumSingleType $ IntegralNumType $ TypeInt
+        -- Performs an inefficient, sequential prefix sum
+        prefixSumSequential multiBlockSize tid smemSz = do
+          when (A.eq singleType tid (liftInt32 0)) $ do
+            _ <- iterFromStepTo tpInt (liftInt 0) (liftInt 1) (multiBlockSize) (liftInt 0) $ \smemIdx pref -> do
+              v  <- readArray TypeInt smemSz smemIdx
+              v' <- add numType v pref
+              writeArray TypeInt smemSz smemIdx v'
+              return v'
+            return_
+
+        -- Performs a prefix sum using the sklansky algorithm
+        prefixSumEfficient _ _ smemSz = do
+          let log2n = Prelude.ceiling $ Prelude.logBase 2.0 (Prelude.fromIntegral multiBlockSizeI)
+          sklansky 0 multiBlockSizeI log2n smemSz
 
 ----
 -- Utility functions used in kernel generation
@@ -580,22 +586,14 @@ imapFromToBlockThread start end body = do
   --
   imapFromStepTo i0 step end body
 
-  -- For thread in block
-imapFromStepToBlockThread :: Operands Int -> Operands Int -> Operands Int -> (Operands Int -> CodeGen PTX ()) -> CodeGen PTX ()
-imapFromStepToBlockThread start step end body = do
-  tid   <- A.fromIntegral integralType numType =<< threadIdx
-  i0    <- add numType tid start
-  --
-  imapFromStepTo i0 step end body
-
 -- | Binary search, that looks for the index of a given value in the given array
 binSearchRolled :: Operands Int               -- ^ Length of array
                 -> Operands Int               -- ^ Target value to look for
                 -> IRArray (Array DIM1 Int)   -- ^ Array to look for value for
                 -> CodeGen PTX (Operands Int) -- ^ Return value: index of the first element that is greater than or equal to the target value
 binSearchRolled end i arr = do
-    right     <- A.sub numType end (liftInt 1)
-    leftRight <- while intPairType (\(OP_Pair left right) -> gt singleType right left) body (pair (liftInt 0) right)
+    right0     <- A.sub numType end (liftInt 1)
+    leftRight <- while intPairType (\(OP_Pair left right) -> gt singleType right left) body (pair (liftInt 0) right0)
     return $ A.fst leftRight
   where intPairType = TupRpair typeInt typeInt
         typeInt     = TupRsingle $ SingleScalarType (NumSingleType (IntegralNumType TypeInt))
@@ -632,7 +630,7 @@ binSearch_loop :: Int                        -- ^ Iteration of the unrolled loop
                -> Operands Int               -- ^ Target value to look for
                -> Operands Int               -- ^ Length of array
                -> CodeGen PTX (Operands Int) -- ^ Return value: index of the last element that is less than or equal to the target value
-binSearch_loop (-1) arr target acc = return acc
+binSearch_loop (-1) _ _ acc = return acc
 binSearch_loop currentBit arr target acc = 
   let 
     mask        = liftInt $ 1 `Bits.shiftL` currentBit
@@ -643,3 +641,30 @@ binSearch_loop currentBit arr target acc =
     acc'  <- ifThenElse (typeInt, lte singleType value target) (bor TypeInt acc mask) (return acc)
     binSearch_loop (currentBit - 1) arr target acc'
 
+sklansky :: Int -> Int -> Int -> IRArray (Array DIM1 Int) -> CodeGen PTX ()
+sklansky _ _ 0 _ = return_
+sklansky d n dInverse arr = do 
+    __syncthreads
+    imapFromToBlockThread (liftInt 0) (liftInt sizeDiv2) $ \k -> do
+      kMod2Dee <- A.mod integralType k (liftInt $ twoPowDee)
+
+      block <- A.mul numType (liftInt 2) =<< A.sub numType k kMod2Dee
+
+      me <- A.add numType block =<< A.add numType kMod2Dee (liftInt $ twoPowDee)
+
+      spine <- A.add numType block =<< A.sub numType (liftInt $ twoPowDee) (liftInt 1)
+
+      myElem <- ifThenElse (tpInt, A.lt singleType me (liftInt n)) (readArray TypeInt arr me) (return $ liftInt 0) -- prefix sum of relevant element
+
+      spineElem <- ifThenElse (tpInt, A.lt singleType spine (liftInt n)) (readArray TypeInt arr spine) (return $ liftInt 0) -- prefix sum of relevant element
+
+      new <- A.add numType myElem spineElem
+      when (A.lt singleType me (liftInt n)) $ do 
+        writeArray TypeInt arr me new
+
+    sklansky (d+1) n (dInverse - 1) arr
+  where dee = Prelude.fromIntegral d :: Double
+        tpInt = TupRsingle $ SingleScalarType $ NumSingleType $ IntegralNumType $ TypeInt
+        sizeDiv2 = Prelude.ceiling $ (Prelude.fromIntegral n) / 2.0
+        twoPowDee = Prelude.round $ 2 ** dee
+        
